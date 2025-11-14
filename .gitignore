@@ -32,12 +32,13 @@ venv.bak/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb_checkpoints/
+*_backup.ipynb  # 백업 파일만 제외
 
 # Data files
 data/
 *.zip
 *.csv
-*.json
+# *.json  # EDA_Report.md 등 설정 파일은 커밋하므로 주석 처리
 *.pkl
 *.pickle
 *.h5
@@ -45,12 +46,18 @@ data/
 
 # Model files
 models/
+kobart_model/
 *.pt
 *.pth
 *.ckpt
 *.model
 *.bin
 *.safetensors
+
+# Hugging Face cache
+.cache/
+transformers_cache/
+huggingface/
 
 # Logs and outputs
 logs/
@@ -84,8 +91,11 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
-*.bak
 *.cache
+
+# Conda environments
+nlp_project/
+nlp_new/
 
 # Testing
 .pytest_cache/
