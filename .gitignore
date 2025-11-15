@@ -34,8 +34,14 @@ venv.bak/
 *.ipynb_checkpoints/
 *_backup.ipynb  # 백업 파일만 제외
 
+# EDA outputs
+eda_plots/
+*.png
+!eda_plots/.gitkeep  # eda_plots 폴더 구조는 유지
+
 # Data files
 data/
+data_sample/
 *.zip
 *.csv
 # *.json  # EDA_Report.md 등 설정 파일은 커밋하므로 주석 처리
@@ -47,12 +53,20 @@ data/
 # Model files
 models/
 kobart_model/
+kobart_test/
+kobart_test_final/
 *.pt
 *.pth
 *.ckpt
 *.model
 *.bin
 *.safetensors
+config.json
+generation_config.json
+special_tokens_map.json
+tokenizer_config.json
+vocab.txt
+merges.txt
 
 # Hugging Face cache
 .cache/
