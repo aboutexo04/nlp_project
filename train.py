@@ -26,7 +26,7 @@ import logging
 warnings.filterwarnings('ignore')
 
 # ===== 설정 =====
-EXPERIMENT_NAME = "kobart_full"  # 실험 이름
+EXPERIMENT_NAME = "kobart_summarization"  # 실험 이름
 NUM_EPOCHS = 5              # 에포크 수
 BATCH_SIZE = 16             # 배치 크기 (RTX 3090 최적화)
 LEARNING_RATE = 5e-5        # 학습률
@@ -180,7 +180,7 @@ print("\n" + "="*70)
 print("모델 로드")
 print("="*70)
 
-model_name = "gogamza/kobart-base-v2"
+model_name = "gogamza/kobart-summarization"
 print(f"모델: {model_name}")
 
 tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
@@ -193,7 +193,7 @@ print(f"✓ 모델 로드 완료")
 print(f"모델 파라미터 수: {sum(p.numel() for p in model.parameters()):,}")
 
 # 모델의 generation config 설정
-model.config.length_penalty = 1.2  # 2.0에서 1.5로 낮춤 (너무 높으면 짧게 끊김)
+model.config.length_penalty = 1.5  # 2.0에서 1.5로 낮춤 (너무 높으면 짧게 끊김)
 model.config.no_repeat_ngram_size = 3
 model.config.early_stopping = True
 model.config.forced_eos_token_id = tokenizer.eos_token_id
@@ -311,8 +311,8 @@ training_args = Seq2SeqTrainingArguments(
     metric_for_best_model="rouge_score",
     greater_is_better=True,
     predict_with_generate=True,
-    generation_max_length=MAX_TARGET_LENGTH,
-    generation_num_beams=5,  # 4에서 5로 증가
+    generation_max_length=80,
+    generation_num_beams=5,
     gradient_accumulation_steps=2,
     report_to="none",
     disable_tqdm=False,
@@ -419,10 +419,10 @@ else:
 inputs = tokenizer(test_dialogue, return_tensors="pt", max_length=MAX_INPUT_LENGTH, truncation=True).to(device)
 summary_ids = model.generate(
     inputs['input_ids'],
-    max_length=max_len,
-    min_length=min_len,
+    max_length=80,
+    min_length=15,
     num_beams=6,  # 4에서 5로 증가 (더 많은 후보 탐색)
-    length_penalty=1.3,  # 2.0에서 1.2로 낮춤 (너무 높으면 짧게 끊김)
+    length_penalty=1.5,  # 2.0에서 1.2로 낮춤 (너무 높으면 짧게 끊김)
     no_repeat_ngram_size=4,
     early_stopping=True,  # True → False (완전한 문장 우선)
     repetition_penalty=1.3,  # 반복 억제 추가
@@ -475,7 +475,7 @@ for i in range(min(5, len(val_data))):
         length_penalty=1.2,  # 1.0에서 1.2로 증가 (적절한 길이 유도)
         no_repeat_ngram_size=3,
         early_stopping=True,
-        repetition_penalty=1.2  # 반복 억제 추가
+        repetition_penalty=1.3  # 반복 억제 추가
     )
     pred_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
 
