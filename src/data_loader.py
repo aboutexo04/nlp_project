@@ -68,7 +68,7 @@ def load_json_data(data_dir):
     return df
 
 
-def load_data_with_cache(data_path='./data/sample/',
+def load_data_with_cache(data_path='./data_sample/',
                           sample_size=15000,
                           use_cache=True):
     """
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     # 데이터 로드 테스트
     print("\n데이터 로드 테스트:")
     data = load_data_with_cache(
-        data_path='./data/sample/',
+        data_path='./data_sample/',
         sample_size=100
     )
     print(f"로드된 데이터: {len(data)}개")

@@ -160,10 +160,10 @@ from src.data_loader import load_json_data
 from src.preprocessing import postprocess_summary
 
 # Train 데이터 로드
-train_data = load_json_data('./data/sample/train_sample/')
+train_data = load_json_data('./data_sample/train_sample/')
 
 # Validation 데이터 로드
-val_data = load_json_data('./data/sample/val_sample/')
+val_data = load_json_data('./data_sample/val_sample/')
 
 # ===== 4. 데이터 확인 =====
 print("\n데이터 확인")

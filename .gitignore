@@ -43,6 +43,7 @@ eda_plots/
 # Data files (모든 데이터 제외)
 data/
 data_sample/
+data_original/
 *.zip
 *.csv
 # *.json  # JSON 설정 파일은 커밋
@@ -113,6 +114,8 @@ Thumbs.db
 test_*.py
 sample_analysis.txt
 test_plot.png
+create_*_sample.py
+analyze_sample_data.py
 
 # Conda environments
 nlp_project/
