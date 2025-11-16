@@ -39,46 +39,48 @@ eda_plots/
 *.png
 !eda_plots/.gitkeep  # eda_plots 폴더 구조는 유지
 
-# Data files
+# Data files (모든 데이터 제외)
 data/
-data_sample/
 *.zip
 *.csv
-# *.json  # EDA_Report.md 등 설정 파일은 커밋하므로 주석 처리
+# *.json  # JSON 설정 파일은 커밋
 *.pkl
 *.pickle
 *.h5
 *.hdf5
 
-# Model files
-models/
-kobart_model/
-kobart_test/
-kobart_test_final/
+# Model files (outputs 폴더 내 모델 제외)
 *.pt
 *.pth
 *.ckpt
 *.model
 *.bin
-*.safetensors
-config.json
-generation_config.json
-special_tokens_map.json
-tokenizer_config.json
-vocab.txt
-merges.txt
 
 # Hugging Face cache
 .cache/
 transformers_cache/
 huggingface/
 
-# Logs and outputs
-logs/
+# Outputs (실험 결과 제외)
+outputs/*/checkpoints/
+outputs/*/models/*.safetensors
+outputs/*/models/model.safetensors.index.json
+outputs/*/models/pytorch_model.bin
+outputs/*/logs/
+!outputs/**/config.json
+!outputs/**/generation_config.json
+!outputs/**/special_tokens_map.json
+!outputs/**/tokenizer_config.json
+!outputs/**/tokenizer.json
+
+# Old model directories (삭제 예정)
+models/
+kobart_model/
+kobart_test/
+kobart_test_final/
+
+# Logs
 *.log
-outputs/
-results/
-checkpoints/
 
 # IDE
 .vscode/
