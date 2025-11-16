@@ -1,5 +1,5 @@
 """
-KoBART Fine-tuning - 전체 샘플 데이터 (15000개)
+KoBART Fine-tuning - 전체 데이터 (Sample)
 MPS/CUDA/CPU 지원
 """
 
@@ -26,8 +26,7 @@ import logging
 warnings.filterwarnings('ignore')
 
 # ===== 설정 =====
-EXPERIMENT_NAME = "kobart_1k"  # 실험 이름
-SAMPLE_SIZE = 1000          # 1000개 샘플 데이터 사용
+EXPERIMENT_NAME = "kobart_full"  # 실험 이름
 NUM_EPOCHS = 5              # 에포크 수
 BATCH_SIZE = 16             # 배치 크기 (RTX 3090 최적화)
 LEARNING_RATE = 5e-5        # 학습률
@@ -53,7 +52,7 @@ os.makedirs(SUBMISSION_DIR, exist_ok=True)
 # 동적 길이 설정 (EDA 분석 기반)
 USE_DYNAMIC_LENGTH = True   # 동적 길이 사용 여부
 COMPRESSION_RATIO = 0.24    # 토큰 기준 압축 비율 (EDA 분석 기반)
-MIN_LENGTH_ABSOLUTE = 15    # 절대 최소 길이 (토큰)
+MIN_LENGTH_ABSOLUTE = 10   # 절대 최소 길이 (토큰)
 MAX_LENGTH_ABSOLUTE = 128   # 절대 최대 길이 (토큰)
 
 # ===== 로깅 설정 =====
@@ -80,11 +79,10 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 logger.info("="*70)
-logger.info("KoBART Fine-tuning - Small 데이터 (1,000개)")
+logger.info("KoBART Fine-tuning - 전체 데이터 (Sample)")
 logger.info("="*70)
 logger.info(f"실험 이름: {EXPERIMENT_NAME}")
 logger.info(f"실험 디렉토리: {EXPERIMENT_DIR}")
-logger.info(f"샘플 크기: {SAMPLE_SIZE:,}")
 logger.info(f"에포크: {NUM_EPOCHS}")
 logger.info(f"배치 크기: {BATCH_SIZE}")
 logger.info(f"캐싱 사용: {USE_CACHE}")
@@ -142,14 +140,14 @@ def calculate_dynamic_length(input_text, tokenizer, compression_ratio=COMPRESSIO
     target_length = int(input_token_length * compression_ratio)
 
     # min_length: 목표 길이의 60% (더 유연하게)
-    min_length = int(target_length * 0.8)
+    min_length = int(target_length * 0.7)
 
     # max_length: 목표 길이의 150% (더 넓은 범위)
-    max_length = int(target_length * 2.0)
+    max_length = int(target_length * 1.8)
 
     # 절대 최소/최대 길이로 제한
-    min_length = max(25, min(min_length, MAX_LENGTH_ABSOLUTE))
-    max_length = max(min_length + 20, min(max_length, MAX_LENGTH_ABSOLUTE))
+    min_length = max(10, min(min_length, MAX_LENGTH_ABSOLUTE))
+    max_length = max(min_length + 15, min(max_length, MAX_LENGTH_ABSOLUTE))
 
     return min_length, max_length
 
@@ -162,10 +160,10 @@ from src.data_loader import load_json_data
 from src.preprocessing import postprocess_summary
 
 # Train 데이터 로드
-train_data = load_json_data('./data/small/train_small/')
+train_data = load_json_data('./data/sample/train_sample/')
 
 # Validation 데이터 로드
-val_data = load_json_data('./data/small/val_small/')
+val_data = load_json_data('./data/sample/val_sample/')
 
 # ===== 4. 데이터 확인 =====
 print("\n데이터 확인")
