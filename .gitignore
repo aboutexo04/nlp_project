@@ -33,6 +33,7 @@ venv.bak/
 .ipynb_checkpoints
 *.ipynb_checkpoints/
 *_backup.ipynb  # 백업 파일만 제외
+notebooks/.ipynb_checkpoints/
 
 # EDA outputs
 eda_plots/
@@ -41,6 +42,7 @@ eda_plots/
 
 # Data files (모든 데이터 제외)
 data/
+data_sample/
 *.zip
 *.csv
 # *.json  # JSON 설정 파일은 커밋
@@ -108,6 +110,9 @@ Thumbs.db
 *.tmp
 *.temp
 *.cache
+test_*.py
+sample_analysis.txt
+test_plot.png
 
 # Conda environments
 nlp_project/
