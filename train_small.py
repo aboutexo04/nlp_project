@@ -1,6 +1,6 @@
 """
-KoBART Fine-tuning - 소량 테스트용 (MPS 지원)
-소량 데이터로 빠르게 파이프라인 테스트
+KoBART Fine-tuning - Small 데이터 (빠른 테스트용)
+MPS/CUDA/CPU 지원
 """
 
 import torch
@@ -10,167 +10,163 @@ from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     DataCollatorForSeq2Seq,
-    EarlyStoppingCallback
+    EarlyStoppingCallback,
+    TrainerCallback
 )
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
-import pandas as pd
-import json
 import os
 import warnings
-from tqdm import tqdm
 import numpy as np
 from rouge_score import rouge_scorer
+from datetime import datetime
+import sys
+import logging
 
 warnings.filterwarnings('ignore')
 
 # ===== 설정 =====
-SAMPLE_SIZE = 1000          # 사용할 데이터 개수
-NUM_EPOCHS = 2              # 에포크 수
-BATCH_SIZE = 4              # 배치 크기
+EXPERIMENT_NAME = "kobart_summarization"  # 실험 이름
+NUM_EPOCHS = 5              # 에포크 수
+BATCH_SIZE = 16             # 배치 크기 (RTX 3090 최적화)
 LEARNING_RATE = 5e-5        # 학습률
 MAX_INPUT_LENGTH = 512      # 최대 입력 길이
 MAX_TARGET_LENGTH = 128     # 최대 요약 길이
-OUTPUT_DIR = "./kobart_test"
 EARLY_STOPPING_PATIENCE = 3 # Early stopping patience (에포크 단위)
+USE_CACHE = True            # 캐싱 사용 여부
+
+# 실험별 폴더 구조 생성
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+EXPERIMENT_DIR = f"./outputs/{EXPERIMENT_NAME}_{timestamp}"
+OUTPUT_DIR = f"{EXPERIMENT_DIR}/checkpoints"
+FINAL_MODEL_DIR = f"{EXPERIMENT_DIR}/models"
+LOG_DIR = f"{EXPERIMENT_DIR}/logs"
+SUBMISSION_DIR = f"{EXPERIMENT_DIR}/submissions"
+
+# 폴더 생성
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(FINAL_MODEL_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(SUBMISSION_DIR, exist_ok=True)
 
 # 동적 길이 설정 (EDA 분석 기반)
 USE_DYNAMIC_LENGTH = True   # 동적 길이 사용 여부
-COMPRESSION_RATIO = 0.24    # EDA 분석: 평균 압축 비율 24.39%
-MIN_LENGTH_ABSOLUTE = 15    # 절대 최소 길이
-MAX_LENGTH_ABSOLUTE = 128   # 절대 최대 길이
+COMPRESSION_RATIO = 0.24    # 토큰 기준 압축 비율 (EDA 분석 기반)
+MIN_LENGTH_ABSOLUTE = 10   # 절대 최소 길이 (토큰)
+MAX_LENGTH_ABSOLUTE = 128   # 절대 최대 길이 (토큰)
 
-print("="*70)
-print("KoBART Fine-tuning - 소량 테스트 (MPS)")
-print("="*70)
-print(f"샘플 크기: {SAMPLE_SIZE}")
-print(f"에포크: {NUM_EPOCHS}")
-print(f"배치 크기: {BATCH_SIZE}")
-print(f"Early Stopping Patience: {EARLY_STOPPING_PATIENCE}")
-print("="*70)
+# ===== 로깅 설정 =====
+log_file = f"{LOG_DIR}/training.log"
+
+# 로거 설정
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# 파일 핸들러 (실시간 저장)
+file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(file_formatter)
+
+# 콘솔 핸들러
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(message)s')
+console_handler.setFormatter(console_formatter)
+
+# 핸들러 추가
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+logger.info("="*70)
+logger.info("KoBART Fine-tuning - Small 데이터 (빠른 테스트용)")
+logger.info("="*70)
+logger.info(f"실험 이름: {EXPERIMENT_NAME}")
+logger.info(f"실험 디렉토리: {EXPERIMENT_DIR}")
+logger.info(f"에포크: {NUM_EPOCHS}")
+logger.info(f"배치 크기: {BATCH_SIZE}")
+logger.info(f"캐싱 사용: {USE_CACHE}")
+logger.info(f"Early Stopping Patience: {EARLY_STOPPING_PATIENCE}")
+logger.info(f"로그 파일: {log_file}")
+logger.info("="*70)
 
 # ===== 1. 디바이스 설정 =====
 def setup_device():
-    """디바이스 설정 (MPS > CUDA > CPU)"""
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-        device_name = "MPS (Apple Silicon GPU)"
-    elif torch.cuda.is_available():
+    """디바이스 설정 (CUDA > MPS > CPU)"""
+    if torch.cuda.is_available():
         device = torch.device("cuda")
         device_name = "CUDA GPU"
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        device_name = "MPS (Apple Silicon GPU)"
     else:
         device = torch.device("cpu")
         device_name = "CPU"
 
-    print(f"\n✓ 디바이스: {device_name}")
+    logger.info(f"\n✓ 디바이스: {device_name}")
 
     # 디바이스 테스트
     try:
         x = torch.randn(3, 3).to(device)
         y = x + x
-        print(f"✓ 디바이스 연산 테스트 성공")
+        logger.info(f"✓ 디바이스 연산 테스트 성공")
     except Exception as e:
-        print(f"⚠️ 디바이스 오류: {e}")
+        logger.warning(f"⚠️ 디바이스 오류: {e}")
         device = torch.device("cpu")
-        print("CPU로 전환합니다.")
+        logger.info("CPU로 전환합니다.")
 
     return device
 
 device = setup_device()
 
-# ===== 2. 동적 길이 계산 함수 =====
-def calculate_dynamic_length(input_text, compression_ratio=COMPRESSION_RATIO):
+# ===== 2. 동적 길이 계산 함수 (토큰 기반) =====
+def calculate_dynamic_length(input_text, tokenizer, compression_ratio=COMPRESSION_RATIO):
     """
-    입력 텍스트 길이에 기반하여 동적으로 요약 길이 계산
+    입력 텍스트의 토큰 길이에 기반하여 동적으로 요약 길이 계산
 
     Args:
         input_text: 입력 대화 텍스트
+        tokenizer: 토크나이저
         compression_ratio: 압축 비율 (기본값: 0.24)
 
     Returns:
-        (min_length, max_length) 튜플
+        (min_length, max_length) 튜플 (토큰 단위)
     """
-    input_length = len(input_text)
+    # 입력 텍스트를 토큰화하여 실제 토큰 길이 계산
+    input_tokens = tokenizer.encode(input_text, add_special_tokens=False)
+    input_token_length = len(input_tokens)
 
-    # 목표 길이 = 입력 길이 * 압축 비율
-    target_length = int(input_length * compression_ratio)
+    # 목표 길이 = 입력 토큰 길이 * 압축 비율
+    target_length = int(input_token_length * compression_ratio)
 
-    # min_length: 목표 길이의 70%
+    # min_length: 목표 길이의 60% (더 유연하게)
     min_length = int(target_length * 0.7)
 
-    # max_length: 목표 길이의 150%
-    max_length = int(target_length * 1.5)
+    # max_length: 목표 길이의 150% (더 넓은 범위)
+    max_length = int(target_length * 1.8)
 
     # 절대 최소/최대 길이로 제한
-    min_length = max(MIN_LENGTH_ABSOLUTE, min(min_length, MAX_LENGTH_ABSOLUTE))
-    max_length = max(min_length + 10, min(max_length, MAX_LENGTH_ABSOLUTE))
+    min_length = max(10, min(min_length, MAX_LENGTH_ABSOLUTE))
+    max_length = max(min_length + 15, min(max_length, MAX_LENGTH_ABSOLUTE))
 
     return min_length, max_length
 
 # ===== 3. 데이터 로드 =====
-def load_data(data_path='./data_sample/train_sample/', sample_size=SAMPLE_SIZE):
-    """JSON 데이터 로드"""
-    print("\n" + "="*70)
-    print("데이터 로드")
-    print("="*70)
+print("\n" + "="*70)
+print("데이터 로드")
+print("="*70)
 
-    dialogues = []
-    summaries = []
+from src.data_loader import load_json_data
+from src.postprocessing import fix_summary_punctuation_and_format
 
-    json_files = []
-    for root, dirs, files in os.walk(data_path):
-        for file in files:
-            if file.endswith('.json'):
-                json_files.append(os.path.join(root, file))
+# Train 데이터 로드 (Small)
+train_data = load_json_data('./data/small/train_small/')
 
-    print(f"JSON 파일 {len(json_files)}개 발견")
+# Validation 데이터 로드 (Small)
+val_data = load_json_data('./data/small/val_small/')
 
-    # 각 파일에서 데이터 수집
-    for json_file in tqdm(json_files, desc="파일 로딩"):
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            if 'data' in data and isinstance(data['data'], list):
-                for item in data['data']:
-                    if 'body' in item and 'dialogue' in item['body']:
-                        dialogue_list = item['body']['dialogue']
-                        dialogue_text = ' '.join([utt['utterance'] for utt in dialogue_list if 'utterance' in utt])
-
-                        if 'summary' in item['body']:
-                            summary = item['body']['summary']
-
-                            if dialogue_text and summary:
-                                dialogues.append(dialogue_text)
-                                summaries.append(summary)
-
-                        # 충분한 데이터를 수집하면 중단
-                        if len(dialogues) >= sample_size * 2:
-                            break
-
-        except Exception as e:
-            print(f"에러: {os.path.basename(json_file)}: {e}")
-            continue
-
-        if len(dialogues) >= sample_size * 2:
-            break
-
-    df = pd.DataFrame({'dialogue': dialogues, 'summary': summaries})
-
-    # 샘플링
-    if len(df) > sample_size:
-        data_sample = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
-    else:
-        data_sample = df.reset_index(drop=True)
-
-    print(f"✓ 데이터 로드 완료: {len(data_sample):,}개")
-    return data_sample
-
-data_sample = load_data()
-
-# ===== 4. Train/Val 분할 =====
-print("\n데이터 분할 (80:20)")
-train_data, val_data = train_test_split(data_sample, test_size=0.2, random_state=42)
+# ===== 4. 데이터 확인 =====
+print("\n데이터 확인")
 
 print(f"Train: {len(train_data):,}개")
 print(f"Validation: {len(val_data):,}개")
@@ -184,7 +180,7 @@ print("\n" + "="*70)
 print("모델 로드")
 print("="*70)
 
-model_name = "gogamza/kobart-base-v2"
+model_name = "gogamza/kobart-summarization"
 print(f"모델: {model_name}")
 
 tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
@@ -195,6 +191,12 @@ model = model.to(device)
 
 print(f"✓ 모델 로드 완료")
 print(f"모델 파라미터 수: {sum(p.numel() for p in model.parameters()):,}")
+
+# 모델의 generation config 설정
+model.config.length_penalty = 1.5  # 2.0에서 1.5로 낮춤 (너무 높으면 짧게 끊김)
+model.config.no_repeat_ngram_size = 3
+model.config.early_stopping = True
+model.config.forced_eos_token_id = tokenizer.eos_token_id
 
 # ===== 6. 토크나이징 함수 =====
 def preprocess_function(examples):
@@ -230,6 +232,9 @@ def compute_metrics(eval_pred):
     # 디코딩
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    # 후처리: 불완전한 문장 제거
+    decoded_preds = [fix_summary_punctuation_and_format(pred) for pred in decoded_preds]
 
     # ROUGE 계산
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
@@ -295,22 +300,23 @@ training_args = Seq2SeqTrainingArguments(
     per_device_train_batch_size=BATCH_SIZE,
     per_device_eval_batch_size=BATCH_SIZE,
     learning_rate=LEARNING_RATE,
-    warmup_steps=50,
+    warmup_steps=100,
     weight_decay=0.01,
-    logging_dir='./logs',
-    logging_steps=10,
-    eval_strategy="epoch",  # 에포크마다 평가 (더 빠름)
+    logging_dir=LOG_DIR,
+    logging_steps=50,
+    eval_strategy="epoch",
     save_strategy="epoch",
-    save_total_limit=1,
+    save_total_limit=2,
     load_best_model_at_end=True,
     metric_for_best_model="rouge_score",
     greater_is_better=True,
     predict_with_generate=True,
-    generation_max_length=MAX_TARGET_LENGTH,
-    generation_num_beams=4,
+    generation_max_length=80,
+    generation_num_beams=5,
     gradient_accumulation_steps=2,
     report_to="none",
     disable_tqdm=False,
+    fp16=torch.cuda.is_available()  # CUDA 사용시 FP16
 )
 
 total_steps = len(train_tokenized) // (BATCH_SIZE * 2) * NUM_EPOCHS
@@ -319,7 +325,7 @@ print(f"에포크: {NUM_EPOCHS}")
 print(f"배치 크기: {BATCH_SIZE}")
 print(f"학습률: {LEARNING_RATE}")
 print(f"총 스텝 수: {total_steps}")
-print(f"예상 시간: 약 {total_steps * 2 / 60:.0f}분 (MPS 기준)")
+print(f"예상 시간: 약 {total_steps * 3 / 60:.0f}분 (GPU 기준)")
 
 # ===== 10. Data Collator =====
 data_collator = DataCollatorForSeq2Seq(
@@ -327,6 +333,15 @@ data_collator = DataCollatorForSeq2Seq(
     model=model,
     padding=True
 )
+
+# ===== 10-1. Custom Logging Callback (소수점 4자리) =====
+class RoundedLoggingCallback(TrainerCallback):
+    """로그 값을 소수점 4자리로 반올림"""
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is not None:
+            for key, value in logs.items():
+                if isinstance(value, float):
+                    logs[key] = round(value, 4)
 
 # ===== 11. Trainer 생성 =====
 print("\n" + "="*70)
@@ -341,7 +356,10 @@ trainer = Seq2SeqTrainer(
     data_collator=data_collator,
     tokenizer=tokenizer,
     compute_metrics=compute_metrics,
-    callbacks=[EarlyStoppingCallback(early_stopping_patience=EARLY_STOPPING_PATIENCE)]
+    callbacks=[
+        EarlyStoppingCallback(early_stopping_patience=EARLY_STOPPING_PATIENCE),
+        RoundedLoggingCallback()  # 소수점 4자리 반올림
+    ]
 )
 
 print("✓ Trainer 준비 완료")
@@ -377,10 +395,9 @@ print(f"최종 ROUGE Score: {eval_results['eval_rouge_score']:.4f}")
 
 # ===== 14. 모델 저장 =====
 print("\n모델 저장 중...")
-final_output_dir = f"{OUTPUT_DIR}_final"
-trainer.save_model(final_output_dir)
-tokenizer.save_pretrained(final_output_dir)
-print(f"✓ 모델 저장 완료: {final_output_dir}")
+trainer.save_model(FINAL_MODEL_DIR)
+tokenizer.save_pretrained(FINAL_MODEL_DIR)
+print(f"✓ 모델 저장 완료: {FINAL_MODEL_DIR}")
 
 # ===== 15. 테스트 생성 =====
 print("\n" + "="*70)
@@ -393,7 +410,7 @@ test_summary = val_data.iloc[test_idx]['summary']
 
 # 동적 길이 계산
 if USE_DYNAMIC_LENGTH:
-    min_len, max_len = calculate_dynamic_length(test_dialogue, COMPRESSION_RATIO)
+    min_len, max_len = calculate_dynamic_length(test_dialogue, tokenizer, COMPRESSION_RATIO)
 else:
     min_len = MIN_LENGTH_ABSOLUTE
     max_len = MAX_LENGTH_ABSOLUTE
@@ -402,24 +419,36 @@ else:
 inputs = tokenizer(test_dialogue, return_tensors="pt", max_length=MAX_INPUT_LENGTH, truncation=True).to(device)
 summary_ids = model.generate(
     inputs['input_ids'],
-    max_length=max_len,
-    min_length=min_len,
-    num_beams=4,
-    length_penalty=1.0,  # 길이 패널티 감소 (2.0 -> 1.0, 중립적)
-    no_repeat_ngram_size=3,  # 3-gram 반복 방지
-    early_stopping=True
+    max_length=80,
+    min_length=15,
+    num_beams=6,  # 4에서 5로 증가 (더 많은 후보 탐색)
+    length_penalty=1.5,  # 2.0에서 1.2로 낮춤 (너무 높으면 짧게 끊김)
+    no_repeat_ngram_size=4,
+    early_stopping=True,  # True → False (완전한 문장 우선)
+    repetition_penalty=1.3,  # 반복 억제 추가
+    eos_token_id=tokenizer.eos_token_id,  # EOS 토큰 명시
+    pad_token_id=tokenizer.pad_token_id,  # PAD 토큰 명시
+    forced_eos_token_id=tokenizer.eos_token_id  # EOS 토큰 강제
 )
 pred_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+
+# 후처리: 불완전한 문장 제거
+pred_summary = fix_summary_punctuation_and_format(pred_summary)
 
 print(f"원본 대화 ({len(test_dialogue)}자):")
 print(test_dialogue[:200] + "...")
 if USE_DYNAMIC_LENGTH:
-    print(f"동적 길이 설정: min={min_len}, max={max_len} (압축률 {COMPRESSION_RATIO*100:.1f}%)")
+    input_tokens = len(tokenizer.encode(test_dialogue, add_special_tokens=False))
+    print(f"동적 길이 설정: min={min_len} tokens, max={max_len} tokens")
+    print(f"입력 토큰 수: {input_tokens} tokens (압축률 목표: {COMPRESSION_RATIO*100:.4f}%)")
 print(f"\n실제 요약 ({len(test_summary)}자):")
 print(test_summary)
 print(f"\n생성 요약 ({len(pred_summary)}자):")
 print(pred_summary)
-print(f"압축률: {len(pred_summary)/len(test_dialogue)*100:.1f}%")
+pred_tokens = len(tokenizer.encode(pred_summary, add_special_tokens=False))
+if USE_DYNAMIC_LENGTH:
+    input_tokens = len(tokenizer.encode(test_dialogue, add_special_tokens=False))
+    print(f"생성 토큰 수: {pred_tokens} tokens (실제 압축률: {pred_tokens/input_tokens*100:.4f}%)")
 
 # ===== 16. 여러 샘플 테스트 =====
 print("\n" + "="*70)
@@ -432,7 +461,7 @@ for i in range(min(5, len(val_data))):
 
     # 동적 길이 계산
     if USE_DYNAMIC_LENGTH:
-        min_len, max_len = calculate_dynamic_length(test_dialogue, COMPRESSION_RATIO)
+        min_len, max_len = calculate_dynamic_length(test_dialogue, tokenizer, COMPRESSION_RATIO)
     else:
         min_len = MIN_LENGTH_ABSOLUTE
         max_len = MAX_LENGTH_ABSOLUTE
@@ -442,23 +471,32 @@ for i in range(min(5, len(val_data))):
         inputs['input_ids'],
         max_length=max_len,
         min_length=min_len,
-        num_beams=4,
-        length_penalty=1.0,
+        num_beams=5,  # 4에서 5로 증가 (더 많은 후보 탐색)
+        length_penalty=1.2,  # 1.0에서 1.2로 증가 (적절한 길이 유도)
         no_repeat_ngram_size=3,
-        early_stopping=True
+        early_stopping=True,
+        repetition_penalty=1.3  # 반복 억제 추가
     )
     pred_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+
+    # 후처리: 불완전한 문장 제거
+    pred_summary = fix_summary_punctuation_and_format(pred_summary)
 
     print(f"\n[샘플 {i+1}]")
     print(f"대화 ({len(test_dialogue)}자): {test_dialogue[:100]}...")
     if USE_DYNAMIC_LENGTH:
-        print(f"동적 길이: min={min_len}, max={max_len}")
+        input_tokens = len(tokenizer.encode(test_dialogue, add_special_tokens=False))
+        pred_tokens = len(tokenizer.encode(pred_summary, add_special_tokens=False))
+        print(f"동적 길이: min={min_len}, max={max_len} tokens")
+        print(f"입력 토큰: {input_tokens}, 생성 토큰: {pred_tokens} (압축률: {pred_tokens/input_tokens*100:.4f}%)")
     print(f"실제: {test_summary}")
     print(f"생성: {pred_summary}")
-    print(f"압축률: {len(pred_summary)/len(test_dialogue)*100:.1f}% (실제 {len(test_summary)}자 / 생성 {len(pred_summary)}자)")
 
 print("\n" + "="*70)
 print("완료!")
 print("="*70)
-print(f"모델 위치: {final_output_dir}")
+print(f"실험 디렉토리: {EXPERIMENT_DIR}")
+print(f"최종 모델: {FINAL_MODEL_DIR}")
 print(f"체크포인트: {OUTPUT_DIR}")
+print(f"로그: {LOG_DIR}")
+print(f"제출 파일: {SUBMISSION_DIR}")

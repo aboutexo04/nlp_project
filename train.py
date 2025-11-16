@@ -1,5 +1,5 @@
 """
-KoBART Fine-tuning - 전체 데이터 (Sample)
+KoBART Fine-tuning - 최종 최적화 버전
 MPS/CUDA/CPU 지원
 """
 
@@ -26,7 +26,7 @@ import logging
 warnings.filterwarnings('ignore')
 
 # ===== 설정 =====
-EXPERIMENT_NAME = "kobart_summarization"  # 실험 이름
+EXPERIMENT_NAME = "kobart_final"  # ✅ 실험 이름
 NUM_EPOCHS = 5              # 에포크 수
 BATCH_SIZE = 16             # 배치 크기 (RTX 3090 최적화)
 LEARNING_RATE = 5e-5        # 학습률
@@ -52,7 +52,7 @@ os.makedirs(SUBMISSION_DIR, exist_ok=True)
 # 동적 길이 설정 (EDA 분석 기반)
 USE_DYNAMIC_LENGTH = True   # 동적 길이 사용 여부
 COMPRESSION_RATIO = 0.24    # 토큰 기준 압축 비율 (EDA 분석 기반)
-MIN_LENGTH_ABSOLUTE = 10   # 절대 최소 길이 (토큰)
+MIN_LENGTH_ABSOLUTE = 10    # 절대 최소 길이 (토큰)
 MAX_LENGTH_ABSOLUTE = 128   # 절대 최대 길이 (토큰)
 
 # ===== 로깅 설정 =====
@@ -79,7 +79,7 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 logger.info("="*70)
-logger.info("KoBART Fine-tuning - 전체 데이터 (Sample)")
+logger.info("KoBART Fine-tuning - 최종 최적화 버전")
 logger.info("="*70)
 logger.info(f"실험 이름: {EXPERIMENT_NAME}")
 logger.info(f"실험 디렉토리: {EXPERIMENT_DIR}")
@@ -139,15 +139,15 @@ def calculate_dynamic_length(input_text, tokenizer, compression_ratio=COMPRESSIO
     # 목표 길이 = 입력 토큰 길이 * 압축 비율
     target_length = int(input_token_length * compression_ratio)
 
-    # min_length: 목표 길이의 60% (더 유연하게)
+    # min_length: 목표 길이의 70%
     min_length = int(target_length * 0.7)
 
-    # max_length: 목표 길이의 150% (더 넓은 범위)
-    max_length = int(target_length * 1.8)
+    # max_length: 목표 길이의 200% (✅ 1.8 → 2.0)
+    max_length = int(target_length * 2.0)
 
     # 절대 최소/최대 길이로 제한
     min_length = max(10, min(min_length, MAX_LENGTH_ABSOLUTE))
-    max_length = max(min_length + 15, min(max_length, MAX_LENGTH_ABSOLUTE))
+    max_length = max(min_length + 20, min(max_length, MAX_LENGTH_ABSOLUTE))  # ✅ +15 → +20
 
     return min_length, max_length
 
@@ -157,13 +157,13 @@ print("데이터 로드")
 print("="*70)
 
 from src.data_loader import load_json_data
-from src.preprocessing import postprocess_summary
+from src.postprocessing import fix_summary_punctuation_and_format
 
 # Train 데이터 로드
-train_data = load_json_data('./data_sample/train_sample/')
+train_data = load_json_data('./data/sample/train_sample/')
 
 # Validation 데이터 로드
-val_data = load_json_data('./data_sample/val_sample/')
+val_data = load_json_data('./data/sample/val_sample/')
 
 # ===== 4. 데이터 확인 =====
 print("\n데이터 확인")
@@ -193,7 +193,7 @@ print(f"✓ 모델 로드 완료")
 print(f"모델 파라미터 수: {sum(p.numel() for p in model.parameters()):,}")
 
 # 모델의 generation config 설정
-model.config.length_penalty = 1.5  # 2.0에서 1.5로 낮춤 (너무 높으면 짧게 끊김)
+model.config.length_penalty = 1.5
 model.config.no_repeat_ngram_size = 3
 model.config.early_stopping = True
 model.config.forced_eos_token_id = tokenizer.eos_token_id
@@ -234,7 +234,7 @@ def compute_metrics(eval_pred):
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
     # 후처리: 불완전한 문장 제거
-    decoded_preds = [postprocess_summary(pred) for pred in decoded_preds]
+    decoded_preds = [fix_summary_punctuation_and_format(pred) for pred in decoded_preds]
 
     # ROUGE 계산
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
@@ -311,7 +311,7 @@ training_args = Seq2SeqTrainingArguments(
     metric_for_best_model="rouge_score",
     greater_is_better=True,
     predict_with_generate=True,
-    generation_max_length=80,
+    generation_max_length=120,  # ✅ 80 → 120
     generation_num_beams=5,
     gradient_accumulation_steps=2,
     report_to="none",
@@ -419,21 +419,21 @@ else:
 inputs = tokenizer(test_dialogue, return_tensors="pt", max_length=MAX_INPUT_LENGTH, truncation=True).to(device)
 summary_ids = model.generate(
     inputs['input_ids'],
-    max_length=80,
+    max_length=120,  # ✅ 80 → 120
     min_length=15,
-    num_beams=6,  # 4에서 5로 증가 (더 많은 후보 탐색)
-    length_penalty=1.5,  # 2.0에서 1.2로 낮춤 (너무 높으면 짧게 끊김)
+    num_beams=6,
+    length_penalty=1.5,
     no_repeat_ngram_size=4,
-    early_stopping=True,  # True → False (완전한 문장 우선)
-    repetition_penalty=1.3,  # 반복 억제 추가
-    eos_token_id=tokenizer.eos_token_id,  # EOS 토큰 명시
-    pad_token_id=tokenizer.pad_token_id,  # PAD 토큰 명시
-    forced_eos_token_id=tokenizer.eos_token_id  # EOS 토큰 강제
+    early_stopping=True,
+    repetition_penalty=1.3,
+    eos_token_id=tokenizer.eos_token_id,
+    pad_token_id=tokenizer.pad_token_id,
+    forced_eos_token_id=tokenizer.eos_token_id
 )
 pred_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
 
 # 후처리: 불완전한 문장 제거
-pred_summary = postprocess_summary(pred_summary)
+pred_summary = fix_summary_punctuation_and_format(pred_summary)
 
 print(f"원본 대화 ({len(test_dialogue)}자):")
 print(test_dialogue[:200] + "...")
@@ -469,18 +469,18 @@ for i in range(min(5, len(val_data))):
     inputs = tokenizer(test_dialogue, return_tensors="pt", max_length=MAX_INPUT_LENGTH, truncation=True).to(device)
     summary_ids = model.generate(
         inputs['input_ids'],
-        max_length=max_len,
-        min_length=min_len,
-        num_beams=5,  # 4에서 5로 증가 (더 많은 후보 탐색)
-        length_penalty=1.2,  # 1.0에서 1.2로 증가 (적절한 길이 유도)
-        no_repeat_ngram_size=3,
+        max_length=120,  # ✅ max_len → 120 (고정)
+        min_length=15,
+        num_beams=5,
+        length_penalty=1.5,
+        no_repeat_ngram_size=4,
         early_stopping=True,
-        repetition_penalty=1.3  # 반복 억제 추가
+        repetition_penalty=1.3
     )
     pred_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
 
     # 후처리: 불완전한 문장 제거
-    pred_summary = postprocess_summary(pred_summary)
+    pred_summary = fix_summary_punctuation_and_format(pred_summary)
 
     print(f"\n[샘플 {i+1}]")
     print(f"대화 ({len(test_dialogue)}자): {test_dialogue[:100]}...")

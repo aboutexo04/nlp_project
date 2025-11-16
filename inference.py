@@ -10,7 +10,7 @@ Usage:
 import torch
 from transformers import PreTrainedTokenizerFast, BartForConditionalGeneration
 from src.data_loader import load_json_data
-from src.preprocessing import postprocess_summary
+from src.postprocessing import fix_summary_punctuation_and_format
 import pandas as pd
 import argparse
 import os
@@ -80,7 +80,7 @@ def main():
         
         # 디코딩 & 후처리
         pred = tokenizer.decode(output[0], skip_special_tokens=True)
-        pred = postprocess_summary(pred)
+        pred = fix_summary_punctuation_and_format(pred)
         predictions.append(pred)
     
     print("✓ 추론 완료")
