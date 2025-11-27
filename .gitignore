@@ -64,17 +64,13 @@ data_original/
 transformers_cache/
 huggingface/
 
-# Outputs (실험 결과 제외)
-outputs/*/checkpoints/
-outputs/*/models/*.safetensors
-outputs/*/models/model.safetensors.index.json
-outputs/*/models/pytorch_model.bin
-outputs/*/logs/
-!outputs/**/config.json
-!outputs/**/generation_config.json
-!outputs/**/special_tokens_map.json
-!outputs/**/tokenizer_config.json
-!outputs/**/tokenizer.json
+# Outputs (실험 결과 전체 제외)
+outputs/
+wandb/
+
+# 설정 파일만 필요시 개별 추가
+# !outputs/**/config.json
+# !outputs/**/generation_config.json
 
 # Old model directories (삭제 예정)
 models/

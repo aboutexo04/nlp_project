@@ -14,30 +14,37 @@ from transformers import (
     TrainerCallback
 )
 from datasets import Dataset
-from sklearn.model_selection import train_test_split
 import os
 import warnings
 import numpy as np
+import pandas as pd
 from rouge_score import rouge_scorer
 from datetime import datetime
 import sys
 import logging
+from src.preprocessing import preprocess_text
+from src.postprocessing import fix_summary_punctuation_and_format
 
 warnings.filterwarnings('ignore')
 
 # ===== 설정 =====
-EXPERIMENT_NAME = "kobart_final"  # ✅ 실험 이름
-NUM_EPOCHS = 5              # 에포크 수
+MODEL_NAME = "gogamza/kobart-summarization"  # 사용 모델
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+EXPERIMENT_NAME = f"{MODEL_NAME.replace('/', '_')}_{timestamp}"
+NUM_EPOCHS = 10              # 에포크 수
 BATCH_SIZE = 16             # 배치 크기 (RTX 3090 최적화)
 LEARNING_RATE = 5e-5        # 학습률
 MAX_INPUT_LENGTH = 512      # 최대 입력 길이
 MAX_TARGET_LENGTH = 128     # 최대 요약 길이
 EARLY_STOPPING_PATIENCE = 3 # Early stopping patience (에포크 단위)
 USE_CACHE = True            # 캐싱 사용 여부
+USE_WANDB = True            # Weights & Biases 로깅 사용 여부
+WANDB_PROJECT = os.getenv("WANDB_PROJECT", "kobart-summarization")
+WANDB_ENTITY = os.getenv("WANDB_ENTITY") or None
 
 # 실험별 폴더 구조 생성
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-EXPERIMENT_DIR = f"./outputs/{EXPERIMENT_NAME}_{timestamp}"
+EXPERIMENT_DIR = f"./outputs/{EXPERIMENT_NAME}"
 OUTPUT_DIR = f"{EXPERIMENT_DIR}/checkpoints"
 FINAL_MODEL_DIR = f"{EXPERIMENT_DIR}/models"
 LOG_DIR = f"{EXPERIMENT_DIR}/logs"
@@ -48,6 +55,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(FINAL_MODEL_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(SUBMISSION_DIR, exist_ok=True)
+
+WANDB_ACTIVE = False
 
 # 동적 길이 설정 (EDA 분석 기반)
 USE_DYNAMIC_LENGTH = True   # 동적 길이 사용 여부
@@ -82,6 +91,7 @@ logger.info("="*70)
 logger.info("KoBART Fine-tuning - 최종 최적화 버전")
 logger.info("="*70)
 logger.info(f"실험 이름: {EXPERIMENT_NAME}")
+logger.info(f"모델: {MODEL_NAME}")
 logger.info(f"실험 디렉토리: {EXPERIMENT_DIR}")
 logger.info(f"에포크: {NUM_EPOCHS}")
 logger.info(f"배치 크기: {BATCH_SIZE}")
@@ -89,6 +99,43 @@ logger.info(f"캐싱 사용: {USE_CACHE}")
 logger.info(f"Early Stopping Patience: {EARLY_STOPPING_PATIENCE}")
 logger.info(f"로그 파일: {log_file}")
 logger.info("="*70)
+
+if USE_WANDB:
+    try:
+        import wandb
+
+        wandb_config = {
+            "model_name": MODEL_NAME,
+            "num_epochs": NUM_EPOCHS,
+            "batch_size": BATCH_SIZE,
+            "learning_rate": LEARNING_RATE,
+            "max_input_length": MAX_INPUT_LENGTH,
+            "max_target_length": MAX_TARGET_LENGTH,
+            "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+            "use_dynamic_length": USE_DYNAMIC_LENGTH,
+            "compression_ratio": COMPRESSION_RATIO,
+        }
+
+        wandb_run_id = EXPERIMENT_NAME
+
+        wandb_kwargs = {
+            "project": WANDB_PROJECT,
+            "name": EXPERIMENT_NAME,
+            "config": wandb_config,
+            "dir": EXPERIMENT_DIR,
+            "id": wandb_run_id,
+        }
+        if WANDB_ENTITY:
+            wandb_kwargs["entity"] = WANDB_ENTITY
+
+        wandb.init(**wandb_kwargs)
+        WANDB_ACTIVE = True
+        logger.info("W&B 로깅 활성화")
+    except Exception as e:
+        WANDB_ACTIVE = False
+        logger.warning(f"⚠️ W&B 초기화 실패: {e}")
+else:
+    logger.info("W&B 로깅 비활성화")
 
 # ===== 1. 디바이스 설정 =====
 def setup_device():
@@ -156,14 +203,114 @@ print("\n" + "="*70)
 print("데이터 로드")
 print("="*70)
 
-from src.data_loader import load_json_data
-from src.postprocessing import fix_summary_punctuation_and_format
 
-# Train 데이터 로드
-train_data = load_json_data('./data/sample/train_sample/')
+def load_csv_dataset(csv_path):
+    """
+    CSV 형식의 대화 데이터 로드 및 전처리
+    """
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"데이터 파일을 찾을 수 없습니다: {csv_path}")
 
-# Validation 데이터 로드
-val_data = load_json_data('./data/sample/val_sample/')
+    df = pd.read_csv(csv_path)
+
+    required_cols = {'dialogue', 'summary'}
+    missing_cols = required_cols - set(df.columns)
+    if missing_cols:
+        raise ValueError(f"CSV에 필요한 컬럼이 없습니다: {missing_cols}")
+
+    # 결측치 제거 후 전처리 적용
+    df = df.dropna(subset=['dialogue', 'summary']).copy()
+    df['dialogue'] = df['dialogue'].astype(str).apply(preprocess_text)
+    df['summary'] = df['summary'].astype(str).apply(preprocess_text)
+
+    return df[['dialogue', 'summary']]
+
+
+def load_test_csv_dataset(csv_path):
+    """
+    테스트 CSV 데이터를 로드하고 전처리
+    """
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"테스트 데이터 파일을 찾을 수 없습니다: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+
+    required_cols = {'fname', 'dialogue'}
+    missing_cols = required_cols - set(df.columns)
+    if missing_cols:
+        raise ValueError(f"테스트 CSV에 필요한 컬럼이 없습니다: {missing_cols}")
+
+    df = df.dropna(subset=['dialogue']).copy()
+    df['fname'] = df['fname'].astype(str)
+    df['dialogue'] = df['dialogue'].astype(str).apply(preprocess_text)
+
+    return df[['fname', 'dialogue']]
+
+
+def validate_submission_format(submission_df, sample_submission_path):
+    """
+    생성된 제출 파일이 샘플 제출 형식과 일치하는지 검증
+    """
+    print("\n제출 형식 검증 중...")
+
+    required_cols = ['fname', 'summary']
+
+    missing_submission_cols = [col for col in required_cols if col not in submission_df.columns]
+    if missing_submission_cols:
+        raise ValueError(f"제출 데이터프레임에 필요한 컬럼이 없습니다: {missing_submission_cols}")
+
+    submission_df = submission_df[required_cols].copy()
+
+    if not os.path.exists(sample_submission_path):
+        print(f"⚠️ 샘플 제출 파일을 찾을 수 없습니다: {sample_submission_path}")
+        return submission_df
+
+    sample_df = pd.read_csv(sample_submission_path)
+    sample_cols = [col for col in sample_df.columns if col in required_cols]
+    missing_sample_cols = [col for col in required_cols if col not in sample_cols]
+
+    if missing_sample_cols:
+        print(f"⚠️ 샘플 제출 파일에 필요한 컬럼이 없습니다: {missing_sample_cols}")
+    else:
+        sample_df = sample_df[sample_cols].copy()
+
+    sample_len = len(sample_df)
+    submission_len = len(submission_df)
+    if sample_len == submission_len:
+        print(f"✓ 행 수 일치: {submission_len:,}개")
+    else:
+        print(f"⚠️ 행 수 불일치: sample={sample_len:,}, submission={submission_len:,}")
+
+    if 'fname' in sample_df.columns:
+        sample_fnames = set(sample_df['fname'].astype(str))
+        submission_fnames = set(submission_df['fname'].astype(str))
+
+        missing_in_submission = sample_fnames - submission_fnames
+        extra_in_submission = submission_fnames - sample_fnames
+
+        if not missing_in_submission and not extra_in_submission:
+            print("✓ fname 목록 일치")
+        else:
+            if missing_in_submission:
+                preview = sorted(list(missing_in_submission))[:5]
+                suffix = " ..." if len(missing_in_submission) > 5 else ""
+                print(f"⚠️ 누락된 fname: {preview}{suffix}")
+            if extra_in_submission:
+                preview = sorted(list(extra_in_submission))[:5]
+                suffix = " ..." if len(extra_in_submission) > 5 else ""
+                print(f"⚠️ 추가된 fname: {preview}{suffix}")
+
+    return submission_df
+
+# Train/Validation 데이터 로드 (CSV)
+train_csv_path = './data/train.csv'
+val_csv_path = './data/dev.csv'
+
+print(f"Train CSV 경로: {train_csv_path}")
+print(f"Validation CSV 경로: {val_csv_path}")
+
+train_data = load_csv_dataset(train_csv_path)
+val_data = load_csv_dataset(val_csv_path)
 
 # ===== 4. 데이터 확인 =====
 print("\n데이터 확인")
@@ -180,11 +327,10 @@ print("\n" + "="*70)
 print("모델 로드")
 print("="*70)
 
-model_name = "gogamza/kobart-summarization"
-print(f"모델: {model_name}")
+print(f"모델: {MODEL_NAME}")
 
-tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
-model = BartForConditionalGeneration.from_pretrained(model_name)
+tokenizer = PreTrainedTokenizerFast.from_pretrained(MODEL_NAME)
+model = BartForConditionalGeneration.from_pretrained(MODEL_NAME)
 
 # 모델을 디바이스로 이동
 model = model.to(device)
@@ -221,6 +367,16 @@ def preprocess_function(examples):
     inputs['labels'] = labels['input_ids']
     return inputs
 
+
+def preprocess_test_function(examples):
+    """테스트 데이터를 위한 토크나이징"""
+    return tokenizer(
+        examples['dialogue'],
+        max_length=MAX_INPUT_LENGTH,
+        truncation=True,
+        padding='max_length'
+    )
+
 # ===== 7. ROUGE 평가 함수 =====
 def compute_metrics(eval_pred):
     """ROUGE 점수 계산 (대회 평가 기준)"""
@@ -254,7 +410,6 @@ def compute_metrics(eval_pred):
     rouge2_avg = np.mean(rouge2_scores)
     rougeL_avg = np.mean(rougeL_scores)
 
-    # 대회 평가 지수: (ROUGE-1 + ROUGE-2 + ROUGE-L) / 3
     final_score = rouge1_avg + rouge2_avg + rougeL_avg
 
     return {
@@ -296,6 +451,7 @@ print("="*70)
 
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
+    run_name=EXPERIMENT_NAME,
     num_train_epochs=NUM_EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
     per_device_eval_batch_size=BATCH_SIZE,
@@ -304,7 +460,7 @@ training_args = Seq2SeqTrainingArguments(
     weight_decay=0.01,
     logging_dir=LOG_DIR,
     logging_steps=50,
-    eval_strategy="epoch",
+    evaluation_strategy="epoch",
     save_strategy="epoch",
     save_total_limit=2,
     load_best_model_at_end=True,
@@ -314,7 +470,7 @@ training_args = Seq2SeqTrainingArguments(
     generation_max_length=120,  # ✅ 80 → 120
     generation_num_beams=5,
     gradient_accumulation_steps=2,
-    report_to="none",
+    report_to="wandb" if WANDB_ACTIVE else "none",
     disable_tqdm=False,
     fp16=torch.cuda.is_available()  # CUDA 사용시 FP16
 )
@@ -399,9 +555,59 @@ trainer.save_model(FINAL_MODEL_DIR)
 tokenizer.save_pretrained(FINAL_MODEL_DIR)
 print(f"✓ 모델 저장 완료: {FINAL_MODEL_DIR}")
 
-# ===== 15. 테스트 생성 =====
+# ===== 15. 제출 파일 생성 =====
 print("\n" + "="*70)
-print("테스트 생성")
+print("제출 파일 생성")
+print("="*70)
+
+test_csv_path = './data/test.csv'
+print(f"Test CSV 경로: {test_csv_path}")
+
+test_data = load_test_csv_dataset(test_csv_path)
+print(f"Test: {len(test_data):,}개")
+
+test_dataset = Dataset.from_pandas(test_data.reset_index(drop=True))
+
+print("테스트 데이터 토크나이징 중...")
+test_tokenized = test_dataset.map(
+    preprocess_test_function,
+    batched=True,
+    remove_columns=['dialogue'],
+    desc="Test"
+)
+
+print("생성 중...")
+test_predictions = trainer.predict(
+    test_tokenized,
+    max_length=120,
+    num_beams=5
+)
+
+generated_ids = test_predictions.predictions
+if isinstance(generated_ids, tuple):
+    generated_ids = generated_ids[0]
+
+decoded_test_preds = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+decoded_test_preds = [
+    fix_summary_punctuation_and_format(pred) for pred in decoded_test_preds
+]
+
+submission_df = pd.DataFrame({
+    'fname': test_data['fname'],
+    'summary': decoded_test_preds
+})
+
+sample_submission_path = './data/sample_submission.csv'
+submission_df = validate_submission_format(submission_df, sample_submission_path)
+
+submission_path = f"{SUBMISSION_DIR}/submission_{timestamp}.csv"
+submission_df.to_csv(submission_path, index=False)
+
+print(f"✓ 제출 파일 저장 완료: {submission_path}")
+
+# ===== 16. 검증 샘플 생성 =====
+print("\n" + "="*70)
+print("검증 샘플 생성")
 print("="*70)
 
 test_idx = 0
@@ -450,9 +656,9 @@ if USE_DYNAMIC_LENGTH:
     input_tokens = len(tokenizer.encode(test_dialogue, add_special_tokens=False))
     print(f"생성 토큰 수: {pred_tokens} tokens (실제 압축률: {pred_tokens/input_tokens*100:.4f}%)")
 
-# ===== 16. 여러 샘플 테스트 =====
+# ===== 17. 여러 검증 샘플 테스트 =====
 print("\n" + "="*70)
-print("추가 샘플 테스트 (5개)")
+print("추가 검증 샘플 테스트 (5개)")
 print("="*70)
 
 for i in range(min(5, len(val_data))):
@@ -500,3 +706,6 @@ print(f"최종 모델: {FINAL_MODEL_DIR}")
 print(f"체크포인트: {OUTPUT_DIR}")
 print(f"로그: {LOG_DIR}")
 print(f"제출 파일: {SUBMISSION_DIR}")
+
+if WANDB_ACTIVE:
+    wandb.finish()
