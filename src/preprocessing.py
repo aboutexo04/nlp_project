@@ -32,9 +32,6 @@ def preprocess_text(text):
     # 2. 노이즈 제거
     text = remove_noise(text)
 
-    # 2-1. 화자 한글로 전환
-    text = re.sub(r'#Person(\d+)#:', r'화자\1:', text)
-    
     # 3. 연속된 공백 → 단일 공백
     text = re.sub(r'\s+', ' ', text)
 
