@@ -44,6 +44,8 @@ eda_plots/
 data/
 data_sample/
 data_original/
+korean_data/
+
 *.zip
 *.csv
 # *.json  # JSON 설정 파일은 커밋
